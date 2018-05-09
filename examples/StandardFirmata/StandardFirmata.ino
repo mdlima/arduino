@@ -42,6 +42,10 @@
 // the minimum interval for sampling analog input
 #define MINIMUM_SAMPLING_INTERVAL   1
 
+// pin sampling interval has 14 bits
+#define PIN_SAMPLING_INTERVAL_TIME_UNIT_MASK 0x2000
+#define PIN_SAMPLING_INTERVAL_VALUE_MASK     0x1FFF
+#define PIN_SAMPLING_INTERVAL_TIME(v) ((v & PIN_SAMPLING_INTERVAL_TIME_UNIT_MASK) ? (v & PIN_SAMPLING_INTERVAL_VALUE_MASK) * 1000 : (v & PIN_SAMPLING_INTERVAL_VALUE_MASK))
 
 /*==============================================================================
  * GLOBAL VARIABLES
@@ -52,7 +56,8 @@ SerialFirmata serialFeature;
 #endif
 
 /* analog inputs */
-int analogInputsToReport = 0; // bitwise array to store pin reporting
+unsigned int analogPinsReportInterval[TOTAL_ANALOG_PINS]; // most significant bit stores unit (0=millis, 1=seconds)
+unsigned long analogPinsPreviousReport[TOTAL_ANALOG_PINS];
 
 /* digital input ports */
 byte reportPINs[TOTAL_PORTS];       // 1 = report this port, 0 = silence
@@ -438,18 +443,21 @@ void digitalWriteCallback(byte port, int value)
 void reportAnalogCallback(byte analogPin, int value)
 {
   if (analogPin < TOTAL_ANALOG_PINS) {
-    if (value == 0) {
-      analogInputsToReport = analogInputsToReport & ~ (1 << analogPin);
-    } else {
-      analogInputsToReport = analogInputsToReport | (1 << analogPin);
-      // prevent during system reset or all analog pin values will be reported
-      // which may report noise for unconnected analog pins
-      if (!isResetting) {
-        // Send pin value immediately. This is helpful when connected via
-        // ethernet, wi-fi or bluetooth so pin states can be known upon
-        // reconnecting.
-        Firmata.sendAnalog(analogPin, analogRead(analogPin));
-      }
+    // value is the report interval in millis or seconds, depending on the first bit. 0 is millis, 1 is seconds.
+    // if value is in millis and <= MINIMUM_SAMPLING_INTERVAL, pin will be reported in the global sampling loop
+    analogPinsReportInterval[analogPin] = value;
+    // prevent during system reset or all analog pin values will be reported
+    // which may report noise for unconnected analog pins
+    if (!isResetting) {
+      // Send pin value immediately. This is helpful when connected via
+      // ethernet, wi-fi or bluetooth so pin states can be known upon
+      // reconnecting.
+      Firmata.sendAnalog(analogPin, analogRead(analogPin));
+      analogPinsPreviousReport[analogPin] = millis();
+    }
+    else {
+      // set last report time to -reporting interval, being unsigned this wil wrap, but so will the check
+      analogPinsPreviousReport[analogPin] = -PIN_SAMPLING_INTERVAL_TIME(analogPinsReportInterval[analogPin]);
     }
   }
   // TODO: save status to EEPROM here, if changed
@@ -621,6 +629,14 @@ void sysexCallback(byte command, byte argc, byte *argv)
         //Firmata.sendString("Not enough data");
       }
       break;
+    case REPORT_ANALOG_CONFIG:
+      if (argc > 1) {
+        int val = argv[1];
+        if (argc > 2) val |= (argv[2] << 7);
+        if (argc > 3) val |= (argv[3] << 14);
+        reportAnalogCallback(argv[0], val);
+      }
+      break;
     case EXTENDED_ANALOG:
       if (argc > 1) {
         int val = argv[1];
@@ -735,7 +751,8 @@ void systemResetCallback()
     servoPinMap[i] = 255;
   }
   // by default, do not report any analog inputs
-  analogInputsToReport = 0;
+  memset(analogPinsReportInterval, 0, TOTAL_ANALOG_PINS * sizeof analogPinsReportInterval[0]);
+  memset(analogPinsPreviousReport, 0, TOTAL_ANALOG_PINS * sizeof analogPinsPreviousReport[0]);
 
   detachedServoCount = 0;
   servoCount = 0;
@@ -798,17 +815,26 @@ void loop()
   // TODO - ensure that Stream buffer doesn't go over 60 bytes
 
   currentMillis = millis();
-  if (currentMillis - previousMillis > samplingInterval) {
-    previousMillis += samplingInterval;
-    /* ANALOGREAD - do all analogReads() at the configured sampling interval */
-    for (pin = 0; pin < TOTAL_PINS; pin++) {
-      if (IS_PIN_ANALOG(pin) && Firmata.getPinMode(pin) == PIN_MODE_ANALOG) {
-        analogPin = PIN_TO_ANALOG(pin);
-        if (analogInputsToReport & (1 << analogPin)) {
+  bool isGlobalSamplingTime = ((currentMillis - previousMillis) > samplingInterval);
+
+  /* ANALOGREAD - do all analogReads() at the configured sampling interval */
+  for (pin = 0; pin < TOTAL_PINS; pin++) {
+    if (IS_PIN_ANALOG(pin) && Firmata.getPinMode(pin) == PIN_MODE_ANALOG) {
+      analogPin = PIN_TO_ANALOG(pin);
+      if (analogPinsReportInterval[analogPin] > 0) {
+        // pin should be reported
+        if ((isGlobalSamplingTime && (PIN_SAMPLING_INTERVAL_TIME(analogPinsReportInterval[analogPin]) <= MINIMUM_SAMPLING_INTERVAL)) || // analog pin using default sampling interval
+            ((currentMillis - analogPinsPreviousReport[analogPin]) > PIN_SAMPLING_INTERVAL_TIME(analogPinsReportInterval[analogPin]))) // analog pin using individual sampling interval
+        {
           Firmata.sendAnalog(analogPin, analogRead(analogPin));
+          analogPinsPreviousReport[analogPin] += PIN_SAMPLING_INTERVAL_TIME(analogPinsReportInterval[analogPin]);
         }
       }
     }
+  }
+
+  if (isGlobalSamplingTime) {
+    previousMillis += samplingInterval;
     // report i2c data for all device with read continuous mode enabled
     if (queryIndex > -1) {
       for (byte i = 0; i < queryIndex + 1; i++) {

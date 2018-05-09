@@ -153,6 +153,11 @@
 #endif
 #define REPORT_FIRMWARE         firmata::REPORT_FIRMWARE // report name and version of the firmware
 
+#ifdef REPORT_ANALOG_CONFIG
+#undef REPORT_ANALOG_CONFIG
+#endif
+#define REPORT_ANALOG_CONFIG  firmata::REPORT_ANALOG_CONFIG // config individual sampling interval
+
 #ifdef EXTENDED_ANALOG
 #undef EXTENDED_ANALOG
 #endif

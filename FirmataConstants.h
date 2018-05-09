@@ -72,6 +72,7 @@ static const int ANALOG_MAPPING_QUERY =    0x69; // ask for mapping of analog to
 static const int ANALOG_MAPPING_RESPONSE = 0x6A; // reply with mapping info
 static const int SAMPLING_INTERVAL =       0x7A; // set the poll rate of the main loop
 static const int SCHEDULER_DATA =          0x7B; // send a createtask/deletetask/addtotask/schedule/querytasks/querytask request to the scheduler
+static const int REPORT_ANALOG_CONFIG =    0x7D; // config individual sampling interval
 static const int SYSEX_NON_REALTIME =      0x7E; // MIDI Reserved for non-realtime messages
 static const int SYSEX_REALTIME =          0x7F; // MIDI Reserved for realtime messages
 
